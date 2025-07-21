@@ -2,14 +2,27 @@ import streamlit as st
 import pandas as pd
 import os
 import textwrap
-import google.generativeai as genai
+import openai
 
-# --- Configure Gemini API ---
-genai.configure(api_key="AIzaSyDVwL7MldTQwY7J9oLinOxKsWjvoanJlYk")  # Replace with your real key
+# --- CONFIGURE PERPLEXITY API ---
+client = openai.OpenAI(
+    api_key="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",
+    base_url="https://api.perplexity.ai"
+)
 
-model = genai.GenerativeModel('gemini-1.5-flash-latest')
+def query_perplexity(prompt, model="sonar-deep-research", system_message="Be helpful, factual, and cite sources if applicable.", max_tokens=4000):
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=max_tokens,
+        temperature=0.7
+    )
+    return response.choices[0].message.content
 
-# --- Load Functions ---
+# --- DATA LOADERS ---
 @st.cache_data
 def load_metrics():
     return pd.read_excel("evaluation_metrics.xlsx")
@@ -28,12 +41,11 @@ def load_raw_data(country_code):
         return pd.read_csv(file_path)
     return pd.DataFrame()
 
-# --- Page Setup ---
-st.set_page_config(page_title="🌍 Ozone ML + Gemini LLM Dashboard", layout="wide")
+# --- PAGE SETUP ---
+st.set_page_config(page_title="🌍 Ozone ML + Perplexity LLM Dashboard", layout="wide")
+st.title("🌍 Ozone Analysis using ML & Perplexity LLM")
 
-st.title("🌍 Ozone Analysis using ML & Gemini LLM")
-
-# --- Sidebar: Country & Model Selection ---
+# --- SIDEBAR ---
 st.sidebar.header("⚙️ Configuration")
 country_codes = ['ARG', 'ASM', 'ATA', 'AUS', 'BRA', 'CAN', 'CHN', 'GRL', 'IND', 'MEX', 'NZL', 'USA']
 country = st.sidebar.selectbox("🌐 Select Country", country_codes)
@@ -43,146 +55,150 @@ metrics_df = load_metrics()
 pred_df = load_predictions(country)
 raw_data_df = load_raw_data(country)
 
-# --- Handle No Data ---
-if pred_df.empty or metrics_df.empty:
-    st.error("❌ Data not available for the selected country.")
+# --- ERROR IF MISSING ---
+if pred_df.empty or metrics_df.empty or raw_data_df.empty:
+    st.error("❌ Required data not available.")
     st.stop()
 
-# --- Filter Data ---
+# --- FILTER DATA ---
 filtered_metrics = metrics_df[metrics_df['Country'] == country]
 filtered_preds = pred_df[pred_df['Country'] == country]
 
-# --- Optional Model Selector ---
 if mode == "Single Model":
     available_models = filtered_metrics['Model'].unique().tolist()
     selected_model = st.sidebar.selectbox("🧠 Select Model", available_models)
 else:
     selected_model = None
 
-# --- Tabs ---
 tabs = st.tabs(["📊 Dashboard", "💬 Ask Custom Questions"])
 
-# --------------------
-# 📊 Tab 1: Dashboard
-# --------------------
+# -------------------------
+# 📊 TAB 1: DASHBOARD
+# -------------------------
 with tabs[0]:
     col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Selected Country", country)
-    with col2:
-        st.metric("Mode", mode)
-    with col3:
-        if mode == "Single Model":
-            st.metric("Model", selected_model)
+    col1.metric("Country", country)
+    col2.metric("Mode", mode)
+    col3.metric("Model", selected_model if selected_model else "All")
 
     st.subheader("📈 Evaluation Metrics")
     st.dataframe(filtered_metrics, use_container_width=True)
 
-    st.subheader("📊 Sample Predictions (first 100 rows)")
-    if mode == "Single Model" and selected_model:
-        display_preds = filtered_preds[filtered_preds["Model"] == selected_model]
-    else:
-        display_preds = filtered_preds
-    st.dataframe(display_preds.head(100), use_container_width=True)
+    st.subheader("📊 All Predictions")
+    display_preds = (filtered_preds[filtered_preds["Model"] == selected_model] if selected_model else filtered_preds)
+    st.dataframe(display_preds, use_container_width=True)
 
-    st.subheader("📄 Raw Ozone Data (first 100 rows)")
-    st.dataframe(raw_data_df.head(100), use_container_width=True)
+    st.subheader("📄 Full Raw Ozone Data")
+    st.dataframe(raw_data_df, use_container_width=True)
 
-    # --- Prompt Generation ---
+    # --- PROMPT GENERATION (LIMITED ROWS TO AVOID 413 ERROR) ---
     def generate_prompt(extra_web_context=""):
         metrics_text = filtered_metrics.to_string(index=False)
-        raw_sample = raw_data_df.head(100).to_string(index=False)
+        raw_data_text = raw_data_df[['daily_date', 'daily_columno3']].head(15).to_string(index=False)
 
         if mode == "Single Model" and selected_model:
-            pred_text = filtered_preds[filtered_preds['Model'] == selected_model][['Date', 'Actual', 'Predicted', 'Predicted_Tuned']].head(100).to_string(index=False)
+            pred_text = filtered_preds[filtered_preds['Model'] == selected_model][['Date', 'Actual', 'Predicted', 'Predicted_Tuned']].head(15).to_string(index=False)
             prompt = textwrap.dedent(f"""
-                Analyze ozone concentration data and ML predictions for {country} using model: {selected_model}.
+                Analyze ozone data and ML predictions for {country} using model: {selected_model}.
 
-                🔹 Raw Data Sample (first 100 rows):
-                {raw_sample}
+                🔹 Sample Raw Ozone Data:
+                {raw_data_text}
 
-                🔹 Predictions from {selected_model}:
+                🔹 Predictions (from {selected_model}):
                 {pred_text}
 
                 🔹 Evaluation Metrics:
                 {metrics_text}
 
-                🔹 Extra Context from Web:
+                🔹 Extra Web Context (optional):
                 {extra_web_context}
 
                 Tasks:
-                1. Compare pre- and post-1989 ozone trends.
-                2. Analyze prediction accuracy including tuned predictions.
-                3. Explain how raw data has been transformed.
-                4. Discuss Montreal Protocol's effect.
+                1. Compare Regional Ozone Levels 
+                2. Evaluate the accuracy of predictions (raw and tuned) [Models are trained using normalized data] .
+                3. Explain any data transformations or patterns you notice.
+                4. Comment on model performance based on metrics.
+                5. Give marks in range of 0-1 for explainibility, data transformation, accuracy and predictions in tabular format [of the selected model].
             """)
         else:
             pred_texts = []
-            for m in filtered_preds['Model'].unique():
-                df_model = filtered_preds[filtered_preds['Model'] == m]
-                pred_sample = df_model[['Date', 'Actual', 'Predicted', 'Predicted_Tuned']].head(100).to_string(index=False)
-                pred_texts.append(f"🔸 Model: {m}\n{pred_sample}")
+            for model_name in filtered_preds['Model'].unique():
+                df_model = filtered_preds[filtered_preds['Model'] == model_name][['Date', 'Actual', 'Predicted', 'Predicted_Tuned']].head(10)
+                model_text = df_model.to_string(index=False)
+                pred_texts.append(f"🔸 Model: {model_name}\n{model_text}")
             all_preds_text = "\n\n".join(pred_texts)
 
             prompt = textwrap.dedent(f"""
-                Perform a comparative analysis of ozone data for {country} using multiple machine learning models.
+                Perform a comparative analysis of ozone levels in {country} using all available ML models.
 
-                🔹 Raw Ozone Data (first 100 rows):
-                {raw_sample}
+                🔹 Sample Raw Ozone Data:
+                {raw_data_text}
 
-                🔹 Prediction Samples:
+                🔹 Model Predictions (Sampled):
                 {all_preds_text}
 
                 🔹 Evaluation Metrics:
                 {metrics_text}
 
-                🔹 Extra Context from Web:
+                🔹 Extra Web Context (optional):
                 {extra_web_context}
 
                 Tasks:
-                1. Evaluate how ozone levels have changed pre- and post-1989 (Montreal Protocol).
-                2. Compare model performances with and without tuning.
-                3. Explain data preprocessing steps for each model.
-                4. Identify the best performing model and justify.
+                1. Analyze ozone concentrations before vs after 1989.
+                2. Compare model accuracy - which performed best?
+                3. Note data transformations or outliers.
+                4. Evaluate how models responded to ozone trends.
+                5. Give marks in range of 0-1 for each model based on its explainibility,data transformation,accuracy and predictions in tabular format.[Read the whole data of all models to understand the predicted vs actual values]
+
             """)
         return prompt
 
-    # --- Button to Run Gemini Analysis ---
-    if st.button("🔍 Interpret with Gemini"):
-        with st.spinner("Generating insights..."):
-            prompt_text = generate_prompt()
+    # --- INTERPRET WITH PERPLEXITY ---
+    if st.button("🔍 Interpret with Perplexity LLM"):
+        with st.spinner("Generating insights with Perplexity..."):
             try:
-                response = model.generate_content(prompt_text)
-                st.subheader("🤖 Gemini LLM Interpretation")
-                st.markdown(response.text)
+                prompt_text = generate_prompt()
+                response_text = query_perplexity(prompt_text)
+                st.subheader("🤖 Perplexity Response")
+                st.markdown(response_text)
             except Exception as e:
-                st.error(f"LLM generation failed: {e}")
+                st.error(f"Perplexity request failed: {e}")
 
-# -----------------------------
-# 💬 Tab 2: Ask Custom Questions
-# -----------------------------
+# ------------------------------
+# 💬 TAB 2: CUSTOM QUESTIONS
+# ------------------------------
 with tabs[1]:
-    st.subheader("💬 Ask a Custom Question")
-    chat_input = st.text_area("Type your question (e.g., how did ozone change after 1989?)")
+    st.subheader("💬 Ask Perplexity a Question")
+    chat_input = st.text_area("Type your question here (based on ozone data, model accuracy, Montreal Protocol effects, etc.)")
 
-    if st.button("🧠 Get Answer"):
+    if st.button("🧠 Get Perplexity Answer"):
         with st.spinner("Thinking..."):
-            combined_info = ""
+            # Limit data snippet size
+            data_snippet = f"""
+            📊 Evaluation Metrics:
+            {filtered_metrics.to_string(index=False)}
 
-            if not pred_df.empty and not metrics_df.empty:
-                combined_info = f"""
-                Evaluation Metrics:\n{metrics_df.head(50).to_string(index=False)}\n\n
-                Sample Predictions:\n{pred_df.head(50).to_string(index=False)}\n\n
-                Raw Ozone Data:\n{raw_data_df.head(50).to_string(index=False)}
-                """
+            📈 Prediction Sample:
+            {display_preds[['Date', 'Actual', 'Predicted', 'Predicted_Tuned']].head(10).to_string(index=False)}
+
+            📄 Raw Ozone Data Sample:
+            {raw_data_df[['daily_date', 'daily_columno3']].head(10).to_string(index=False)}
+            """
             try:
-                chat_prompt = f"""Answer the following user question based on ozone data and predictions:\n\nQuestion: {chat_input}\n\nAvailable Data:\n{combined_info}"""
-                reply = model.generate_content(chat_prompt)
-                st.subheader("🤖 Gemini's Response")
-                st.markdown(reply.text)
-            except Exception as e:
-                st.error(f"Failed to generate response: {e}")
+                user_question_prompt = f"""
+                Using the following ozone dataset and predictions, answer this question:
 
+                Question:
+                {chat_input}
+
+                Data:
+                {data_snippet}
+                """
+                reply = query_perplexity(user_question_prompt)
+                st.subheader("🤖 Perplexity's Response")
+                st.markdown(reply)
+            except Exception as e:
+                st.error(f"Failed to get answer: {e}")
 
 
 
